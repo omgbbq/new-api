@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strconv"
+
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -103,6 +105,15 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	requestInput := billingexpr.RequestInput{}
 	if relayInfo.BillingRequestInput != nil {
 		requestInput = *relayInfo.BillingRequestInput
+	}
+
+	if relayInfo.ChannelMeta != nil {
+		requestInput.Channel = billingexpr.ChannelInfo{
+			Name:    relayInfo.ChannelMeta.ChannelName,
+			BaseURL: relayInfo.ChannelMeta.ChannelBaseUrl,
+			ID:      strconv.Itoa(relayInfo.ChannelMeta.ChannelId),
+			Type:    strconv.Itoa(relayInfo.ChannelMeta.ChannelType),
+		}
 	}
 
 	tr, err := billingexpr.ComputeTieredQuotaWithRequest(snap, params, requestInput)

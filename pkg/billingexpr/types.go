@@ -10,6 +10,17 @@ import (
 type RequestInput struct {
 	Headers map[string]string
 	Body    []byte
+	Channel ChannelInfo
+}
+
+// ChannelInfo carries channel metadata into the expression environment.
+// At pre-consume time all fields are empty (channel not yet selected);
+// at settlement time they are populated from RelayInfo.ChannelMeta.
+type ChannelInfo struct {
+	Name    string
+	BaseURL string
+	ID      string
+	Type    string
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
