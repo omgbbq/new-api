@@ -262,6 +262,14 @@ function parseTierBody(bodyStr: string): Record<string, number> {
   for (const [varName, field] of Object.entries(BILLING_VAR_KEY_TO_FIELD)) {
     tier[field] = coeffs[varName] || 0
   }
+  // Handle bare numeric constant (per-call fixed cost with no variable coefficients)
+  if (Object.keys(coeffs).length === 0) {
+    const stripped = bodyStr.trim()
+    const num = Number(stripped)
+    if (Number.isFinite(num) && num > 0) {
+      tier['fixedCost'] = num
+    }
+  }
   return tier
 }
 

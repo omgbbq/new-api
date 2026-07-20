@@ -222,6 +222,10 @@ export function DynamicPricingBreakdown({
     )
   }
 
+  const hasFixedCost = tiers.some(
+    (tier) => Number(tier['fixedCost' as keyof ParsedTier] || 0) > 0
+  )
+
   const visiblePriceFields = BILLING_PRICING_VARS.filter((v) => {
     if (!hasTiers) return false
     if (hideCacheColumns && v.group === 'cache') return false
@@ -296,6 +300,23 @@ export function DynamicPricingBreakdown({
                     </div>
                   )}
                   <div className='grid grid-cols-2 gap-x-3 gap-y-1.5'>
+                    {hasFixedCost && (
+                      <div className='min-w-0'>
+                        <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
+                          {t('Per-call')}
+                        </div>
+                        <div
+                          className={cn(
+                            'truncate font-mono',
+                            compact ? 'text-xs' : 'text-sm font-semibold'
+                          )}
+                        >
+                          {Number(tier['fixedCost' as keyof ParsedTier] || 0) > 0
+                            ? `${symbol}${(Number(tier['fixedCost' as keyof ParsedTier]) / 1_000_000 * rate).toFixed(4)}`
+                            : '-'}
+                        </div>
+                      </div>
+                    )}
                     {visiblePriceFields.map((v) => {
                       const value = Number(
                         tier[v.field as string as keyof ParsedTier] || 0
@@ -384,6 +405,34 @@ export function DynamicPricingBreakdown({
                   )
                 },
               },
+              ...(hasFixedCost
+                ? [
+                    {
+                      id: 'fixedCost',
+                      header: t('Per-call'),
+                      className: cn(
+                        'text-muted-foreground py-2 text-right font-medium',
+                        compact && 'h-8'
+                      ),
+                      cellClassName: cn(
+                        'text-right align-top font-mono',
+                        compact ? 'py-2' : 'py-2.5'
+                      ),
+                      cell: (tier: ParsedTier) => {
+                        const value = Number(
+                          tier['fixedCost' as keyof ParsedTier] || 0
+                        )
+                        return value > 0 ? (
+                          <span className={cn(!compact && 'font-semibold')}>
+                            {`${symbol}${(value / 1_000_000 * rate).toFixed(4)}`}
+                          </span>
+                        ) : (
+                          '-'
+                        )
+                      },
+                    },
+                  ]
+                : []),
               ...visiblePriceFields.map((v, index) => ({
                 id: v.field ?? `price-${index}`,
                 header: t(v.shortLabel),

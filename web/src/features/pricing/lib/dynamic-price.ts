@@ -129,6 +129,28 @@ export function getDynamicPriceEntries(
 ): DynamicPriceEntry[] {
   if (!tier) return []
 
+  const fixedCost = Number(tier['fixedCost' as keyof ParsedTier] || 0)
+  if (fixedCost > 0) {
+    const groupRatio = options.groupRatioMultiplier ?? 1
+    const priceUSD = (fixedCost / 1_000_000) * groupRatio
+    const formatted = formatBillingCurrencyFromUSD(priceUSD, {
+      digitsLarge: 4,
+      digitsSmall: 6,
+      abbreviate: false,
+    })
+    return [
+      {
+        key: 'fixed',
+        field: 'fixedCost',
+        label: 'Per-call',
+        shortLabel: 'Per-call',
+        value: fixedCost,
+        formatted,
+        variable: BILLING_PRICING_VARS[0],
+      },
+    ]
+  }
+
   return BILLING_PRICING_VARS.flatMap((variable) => {
     if (!variable.field) return []
     const value = Number(tier[variable.field])
