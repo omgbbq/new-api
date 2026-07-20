@@ -777,3 +777,139 @@ func BenchmarkRatioBilling_Parallel(b *testing.B) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Channel-based billing differentiation tests
+// ---------------------------------------------------------------------------
+
+const channelBillingExpr = `channel("name") == "ChannelA" ? tier("per-call", 50000) : channel("name") == "ChannelB" ? tier("token", p*2.5 + c*15) : tier("combo", p*2.5 + c*15 + img_o*167)`
+
+func TestTryTieredSettle_ChannelDifferentiation_ChannelA(t *testing.T) {
+	info := makeRelayInfo(channelBillingExpr, 1.0, 1000, 500)
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelName:    "ChannelA",
+		ChannelId:      1,
+		ChannelBaseUrl: "https://a.example.com",
+		ChannelType:    1,
+	}
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	// per-call: 50000; quota = 50000 / 1M * 500K = 25000
+	if quota != 25000 {
+		t.Fatalf("quota = %d, want 25000 (per-call)", quota)
+	}
+	if result.MatchedTier != "per-call" {
+		t.Fatalf("tier = %s, want per-call", result.MatchedTier)
+	}
+}
+
+func TestTryTieredSettle_ChannelDifferentiation_ChannelB(t *testing.T) {
+	info := makeRelayInfo(channelBillingExpr, 1.0, 1000, 500)
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelName:    "ChannelB",
+		ChannelId:      2,
+		ChannelBaseUrl: "https://b.example.com",
+		ChannelType:    1,
+	}
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	// token: p*2.5 + c*15 = 10000; quota = 10000 / 1M * 500K = 5000
+	if quota != 5000 {
+		t.Fatalf("quota = %d, want 5000 (token)", quota)
+	}
+	if result.MatchedTier != "token" {
+		t.Fatalf("tier = %s, want token", result.MatchedTier)
+	}
+}
+
+func TestTryTieredSettle_ChannelDifferentiation_ChannelC(t *testing.T) {
+	info := makeRelayInfo(channelBillingExpr, 1.0, 1000, 500)
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelName:    "ChannelC",
+		ChannelId:      3,
+		ChannelBaseUrl: "https://c.example.com",
+		ChannelType:    1,
+	}
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500, ImgO: 100})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	// combo: p*2.5 + c*15 + img_o*167 = 2500+7500+16700 = 26700; quota = 26700 / 1M * 500K = 13350
+	if quota != 13350 {
+		t.Fatalf("quota = %d, want 13350 (combo)", quota)
+	}
+	if result.MatchedTier != "combo" {
+		t.Fatalf("tier = %s, want combo", result.MatchedTier)
+	}
+}
+
+func TestTryTieredSettle_ChannelDifferentiation_NoChannel(t *testing.T) {
+	// Pre-consume scenario: no ChannelMeta → falls to base/combo tier
+	info := makeRelayInfo(channelBillingExpr, 1.0, 1000, 500)
+	// ChannelMeta is nil by default
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500, ImgO: 100})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	// No channel → channel("name") == "" → combo tier
+	// combo: 2500+7500+16700 = 26700; quota = 26700 / 1M * 500K = 13350
+	if quota != 13350 {
+		t.Fatalf("quota = %d, want 13350 (combo fallback)", quota)
+	}
+	if result.MatchedTier != "combo" {
+		t.Fatalf("tier = %s, want combo", result.MatchedTier)
+	}
+}
+
+func TestTryTieredSettle_ChannelDifferentiation_CrossedTier(t *testing.T) {
+	// Pre-consume hits combo tier (no channel), but settlement hits per-call (ChannelA)
+	info := makeRelayInfo(channelBillingExpr, 1.0, 1000, 500)
+	// makeRelayInfo runs expression without channel → EstimatedTier = "combo"
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelName: "ChannelA",
+		ChannelId:   1,
+		ChannelType: 1,
+	}
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	if quota != 25000 {
+		t.Fatalf("quota = %d, want 25000", quota)
+	}
+	if !result.CrossedTier {
+		t.Fatal("expected CrossedTier = true (pre-consume was combo, settle is per-call)")
+	}
+}
+
+func TestTryTieredSettle_ChannelBaseURL_Condition(t *testing.T) {
+	exprStr := `has(channel("base_url"), "azure") ? tier("azure", p*3 + c*12) : tier("default", p*2 + c*10)`
+	info := makeRelayInfo(exprStr, 1.0, 1000, 500)
+	info.ChannelMeta = &relaycommon.ChannelMeta{
+		ChannelName:    "Azure-OpenAI",
+		ChannelId:      10,
+		ChannelBaseUrl: "https://my-resource.openai.azure.com",
+		ChannelType:    3,
+	}
+
+	ok, quota, result := TryTieredSettle(info, billingexpr.TokenParams{P: 1000, C: 500})
+	if !ok {
+		t.Fatal("expected tiered settle")
+	}
+	// azure: p*3 + c*12 = 3000+6000 = 9000; quota = 9000 / 1M * 500K = 4500
+	if quota != 4500 {
+		t.Fatalf("quota = %d, want 4500 (azure)", quota)
+	}
+	if result.MatchedTier != "azure" {
+		t.Fatalf("tier = %s, want azure", result.MatchedTier)
+	}
+}

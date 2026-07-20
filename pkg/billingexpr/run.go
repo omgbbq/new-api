@@ -17,6 +17,10 @@ import (
 //   - len              — total input context length for tier conditions (never reduced by sub-category exclusion)
 //   - cr, cc, cc1h     — cache read / creation / creation-1h tokens
 //   - tier(name, value) — trace callback that records which tier matched
+//   - header(key)       — reads a client request header (case-insensitive)
+//   - channel(key)      — reads channel metadata: "name", "base_url", "id", "type" (empty at pre-consume, populated at settlement)
+//   - param(path)       — reads a JSON path from the request body
+//   - has(source, substr) — substring check
 //   - max, min, abs, ceil, floor — standard math helpers
 //
 // Returns the resulting float64 quota (before group ratio) and a TraceResult
@@ -52,17 +56,24 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 	trace := TraceResult{}
 	headers := normalizeHeaders(request.Headers)
 
+	channelFields := map[string]string{
+		"name":     request.Channel.Name,
+		"base_url": request.Channel.BaseURL,
+		"id":       request.Channel.ID,
+		"type":     request.Channel.Type,
+	}
+
 	env := map[string]interface{}{
-		"p":    params.P,
-		"c":    params.C,
-		"len":  params.Len,
-		"cr":   params.CR,
-		"cc":   params.CC,
-		"cc1h": params.CC1h,
-		"img":  params.Img,
+		"p":     params.P,
+		"c":     params.C,
+		"len":   params.Len,
+		"cr":    params.CR,
+		"cc":    params.CC,
+		"cc1h":  params.CC1h,
+		"img":   params.Img,
 		"img_o": params.ImgO,
-		"ai":   params.AI,
-		"ao":   params.AO,
+		"ai":    params.AI,
+		"ao":    params.AO,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
@@ -70,6 +81,9 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 		},
 		"header": func(key string) string {
 			return headers[strings.ToLower(strings.TrimSpace(key))]
+		},
+		"channel": func(key string) string {
+			return channelFields[strings.ToLower(strings.TrimSpace(key))]
 		},
 		"param": func(path string) interface{} {
 			path = strings.TrimSpace(path)
@@ -94,10 +108,10 @@ func runProgram(prog *vm.Program, params TokenParams, request RequestInput) (flo
 		"month":   func(tz string) int { return int(timeInZone(tz).Month()) },
 		"day":     func(tz string) int { return timeInZone(tz).Day() },
 		"max":     math.Max,
-		"min":   math.Min,
-		"abs":   math.Abs,
-		"ceil":  math.Ceil,
-		"floor": math.Floor,
+		"min":     math.Min,
+		"abs":     math.Abs,
+		"ceil":    math.Ceil,
+		"floor":   math.Floor,
 	}
 
 	out, err := expr.Run(prog, env)

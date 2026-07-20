@@ -1009,3 +1009,210 @@ func BenchmarkExprRunCached(b *testing.B) {
 		billingexpr.RunExpr(benchComplexExpr, params)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// channel() function tests — per-channel billing differentiation
+// ---------------------------------------------------------------------------
+
+func TestChannelFunction_MatchByName(t *testing.T) {
+	exprStr := `channel("name") == "ChannelA" ? tier("per-call", 50000) : tier("token", p*2.5 + c*15)`
+	cost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{P: 1000, C: 500},
+		billingexpr.RequestInput{
+			Channel: billingexpr.ChannelInfo{Name: "ChannelA", BaseURL: "https://a.example.com", ID: "1", Type: "1"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost != 50000 {
+		t.Errorf("cost = %f, want 50000 (per-call)", cost)
+	}
+	if trace.MatchedTier != "per-call" {
+		t.Errorf("tier = %q, want per-call", trace.MatchedTier)
+	}
+}
+
+func TestChannelFunction_FallbackWhenEmpty(t *testing.T) {
+	exprStr := `channel("name") == "ChannelA" ? tier("per-call", 50000) : tier("base", p*2.5 + c*15)`
+	cost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{P: 1000, C: 500},
+		billingexpr.RequestInput{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// channel("name") == "" != "ChannelA" → base tier
+	want := 1000*2.5 + 500*15
+	if math.Abs(cost-want) > 1e-6 {
+		t.Errorf("cost = %f, want %f (base tier)", cost, want)
+	}
+	if trace.MatchedTier != "base" {
+		t.Errorf("tier = %q, want base", trace.MatchedTier)
+	}
+}
+
+func TestChannelFunction_MatchByBaseURL(t *testing.T) {
+	exprStr := `has(channel("base_url"), "azure") ? tier("azure", p*3 + c*12) : tier("default", p*2.5 + c*15)`
+	cost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{P: 1000, C: 500},
+		billingexpr.RequestInput{
+			Channel: billingexpr.ChannelInfo{Name: "Azure-GPT", BaseURL: "https://my-azure.openai.azure.com", ID: "2", Type: "3"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 1000*3.0 + 500*12.0
+	if math.Abs(cost-want) > 1e-6 {
+		t.Errorf("cost = %f, want %f (azure tier)", cost, want)
+	}
+	if trace.MatchedTier != "azure" {
+		t.Errorf("tier = %q, want azure", trace.MatchedTier)
+	}
+}
+
+func TestChannelFunction_MultiChannelBilling(t *testing.T) {
+	// Simulates the user's scenario: same model, different channels, different pricing
+	exprStr := `channel("name") == "ChannelA" ? tier("per-call", 50000) : channel("name") == "ChannelB" ? tier("token", p*2.5 + c*15) : tier("combo", p*2.5 + c*15 + img_o*167)`
+
+	tests := []struct {
+		name    string
+		channel billingexpr.ChannelInfo
+		params  billingexpr.TokenParams
+		want    float64
+		tier    string
+	}{
+		{
+			name:    "ChannelA per-call",
+			channel: billingexpr.ChannelInfo{Name: "ChannelA"},
+			params:  billingexpr.TokenParams{P: 1000, C: 500},
+			want:    50000,
+			tier:    "per-call",
+		},
+		{
+			name:    "ChannelB token billing",
+			channel: billingexpr.ChannelInfo{Name: "ChannelB"},
+			params:  billingexpr.TokenParams{P: 1000, C: 500},
+			want:    1000*2.5 + 500*15,
+			tier:    "token",
+		},
+		{
+			name:    "ChannelC combo billing",
+			channel: billingexpr.ChannelInfo{Name: "ChannelC"},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 100},
+			want:    1000*2.5 + 500*15 + 100*167,
+			tier:    "combo",
+		},
+		{
+			name:    "no channel (pre-consume fallback)",
+			channel: billingexpr.ChannelInfo{},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 100},
+			want:    1000*2.5 + 500*15 + 100*167,
+			tier:    "combo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost, trace, err := billingexpr.RunExprWithRequest(exprStr, tt.params,
+				billingexpr.RequestInput{Channel: tt.channel},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if math.Abs(cost-tt.want) > 1e-6 {
+				t.Errorf("cost = %f, want %f", cost, tt.want)
+			}
+			if trace.MatchedTier != tt.tier {
+				t.Errorf("tier = %q, want %q", trace.MatchedTier, tt.tier)
+			}
+		})
+	}
+}
+
+func TestChannelFunction_CaseInsensitiveKey(t *testing.T) {
+	exprStr := `channel("NAME") == "test" ? 1.0 : 2.0`
+	cost, _, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{},
+		billingexpr.RequestInput{
+			Channel: billingexpr.ChannelInfo{Name: "test"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost != 1.0 {
+		t.Errorf("cost = %f, want 1.0 (case-insensitive key lookup)", cost)
+	}
+}
+
+func TestChannelFunction_UnknownKeyReturnsEmpty(t *testing.T) {
+	exprStr := `channel("nonexistent") == "" ? 1.0 : 2.0`
+	cost, _, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{},
+		billingexpr.RequestInput{
+			Channel: billingexpr.ChannelInfo{Name: "test"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost != 1.0 {
+		t.Errorf("cost = %f, want 1.0 (unknown key returns empty string)", cost)
+	}
+}
+
+func TestChannelFunction_EmptyNameFallsToBase(t *testing.T) {
+	// Simulates pre-consume: channel not yet selected, channel("name") == ""
+	exprStr := `channel("name") == "渠道A" ? tier("per-call", 500000) : channel("name") == "渠道B" ? tier("token", p * 12.12 + c * 727.26) : tier("base", p * 14.2 + c * 85.44 + img_o * 853)`
+
+	tests := []struct {
+		name    string
+		channel billingexpr.ChannelInfo
+		params  billingexpr.TokenParams
+		want    float64
+		tier    string
+	}{
+		{
+			name:    "empty ChannelInfo (pre-consume)",
+			channel: billingexpr.ChannelInfo{},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 200},
+			want:    1000*14.2 + 500*85.44 + 200*853,
+			tier:    "base",
+		},
+		{
+			name:    "zero-value RequestInput",
+			channel: billingexpr.ChannelInfo{Name: ""},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 200},
+			want:    1000*14.2 + 500*85.44 + 200*853,
+			tier:    "base",
+		},
+		{
+			name:    "渠道A selected (settlement)",
+			channel: billingexpr.ChannelInfo{Name: "渠道A"},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 200},
+			want:    500000,
+			tier:    "per-call",
+		},
+		{
+			name:    "渠道B selected (settlement)",
+			channel: billingexpr.ChannelInfo{Name: "渠道B"},
+			params:  billingexpr.TokenParams{P: 1000, C: 500, ImgO: 200},
+			want:    1000*12.12 + 500*727.26,
+			tier:    "token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost, trace, err := billingexpr.RunExprWithRequest(exprStr, tt.params,
+				billingexpr.RequestInput{Channel: tt.channel},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if math.Abs(cost-tt.want) > 1e-6 {
+				t.Errorf("cost = %f, want %f", cost, tt.want)
+			}
+			if trace.MatchedTier != tt.tier {
+				t.Errorf("tier = %q, want %q", trace.MatchedTier, tt.tier)
+			}
+		})
+	}
+}
