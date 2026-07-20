@@ -277,21 +277,65 @@ export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
   if (!exprStr) return []
   try {
     const { body } = stripExprVersion(exprStr)
-    const condGroup =
-      `((?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)` +
-      `(?:\\s*&&\\s*(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)*)`
-    const tierRe = new RegExp(
-      `(?:${condGroup}\\s*\\?\\s*)?tier\\("([^"]*)",\\s*([^)]+)\\)`,
-      'g'
-    )
+
+    // Strategy: extract all tier("label", body) calls using balanced parenthesis matching
     const tiers: ParsedTier[] = []
-    let m
-    while ((m = tierRe.exec(body)) !== null) {
-      const condStr = m[1] || ''
+    const tierPrefix = 'tier("'
+    let searchFrom = 0
+
+    while (searchFrom < body.length) {
+      const tierStart = body.indexOf(tierPrefix, searchFrom)
+      if (tierStart === -1) break
+
+      // Extract label (up to the closing quote)
+      const labelStart = tierStart + tierPrefix.length
+      const labelEnd = body.indexOf('"', labelStart)
+      if (labelEnd === -1) break
+      const label = body.slice(labelStart, labelEnd)
+
+      // Expect ", " after the label's closing quote
+      const afterLabel = body.indexOf(',', labelEnd)
+      if (afterLabel === -1) break
+      const bodyStart = afterLabel + 1
+
+      // Find matching closing paren for the tier() call using depth tracking
+      let depth = 1
+      let pos = bodyStart
+      // We entered after the opening paren of tier(
+      const outerParenStart = body.lastIndexOf('(', labelStart)
+      if (outerParenStart === -1) break
+      pos = outerParenStart + 1
+      // Skip past "label", to get to the body portion
+      pos = afterLabel + 1
+      depth = 1
+      let bodyEnd = -1
+      for (let i = pos; i < body.length; i++) {
+        if (body[i] === '(') depth++
+        else if (body[i] === ')') {
+          depth--
+          if (depth === 0) {
+            bodyEnd = i
+            break
+          }
+        }
+      }
+      if (bodyEnd === -1) break
+
+      const tierBodyStr = body.slice(pos, bodyEnd).trim()
+
+      // Try to extract conditions from preceding text (p|c|len comparisons)
       const conditions: TierCondition[] = []
-      if (condStr) {
-        for (const cp of condStr.split(/\s*&&\s*/)) {
-          const cm = cp.trim().match(/^(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/)
+      const preceding = body.slice(0, tierStart)
+      const lastQuestion = preceding.lastIndexOf('?')
+      if (lastQuestion !== -1) {
+        // Look for condition pattern before the '?'
+        const condCandidate = preceding.slice(
+          Math.max(0, lastQuestion - 200),
+          lastQuestion
+        ).trim()
+        const condParts = condCandidate.split(/\s*&&\s*/)
+        for (const cp of condParts) {
+          const cm = cp.trim().match(/(?:^|[?:])\s*(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+]+)\s*$/)
           if (cm) {
             conditions.push({
               var: cm[1] as TierCondition['var'],
@@ -301,12 +345,22 @@ export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
           }
         }
       }
-      const tier = parseTierBody(m[3]) as ParsedTier
-      tier.label = m[2]
+
+      const tier = parseTierBody(tierBodyStr) as ParsedTier
+      tier.label = label
       tier.conditions = conditions
       tiers.push(tier)
+
+      searchFrom = bodyEnd + 1
     }
-    return tiers
+
+    // Deduplicate tiers with the same label (keep the first occurrence)
+    const seen = new Set<string>()
+    return tiers.filter((t) => {
+      if (seen.has(t.label)) return false
+      seen.add(t.label)
+      return true
+    })
   } catch {
     return []
   }

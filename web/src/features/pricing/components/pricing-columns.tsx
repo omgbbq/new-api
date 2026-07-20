@@ -164,7 +164,9 @@ export function usePricingColumns(
                 ))}
               </span>
               <div className='text-muted-foreground/50 text-[10px]'>
-                / {tokenUnitLabel} tokens
+                {primaryEntries.some((e) => e.field === 'fixedCost')
+                  ? `/ ${t('call')}`
+                  : `/ ${tokenUnitLabel} tokens`}
                 {dynamicSummary.tierCount > 1 &&
                   ` · ${t('{{count}} tiers', {
                     count: dynamicSummary.tierCount,
