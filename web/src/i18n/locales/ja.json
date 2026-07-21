@@ -4866,6 +4866,7 @@
     "Upstream prices fetched successfully": "上流価格を正常に取得しました",
     "Upstream ratios fetched successfully": "アップストリーム比率が正常に取得されました",
     "Upstream Request ID": "上流リクエストID",
+    "Response ID": "レスポンスID",
     "Upstream Response": "アップストリームレスポンス",
     "Upstream Response (billing-usage-anthropic-estimated)": "アップストリームレスポンス (billing-usage-anthropic-estimated)",
     "Upstream Response (billing-usage-anthropic)": "アップストリームレスポンス (billing-usage-anthropic)",

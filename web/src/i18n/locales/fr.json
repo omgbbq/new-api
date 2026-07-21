@@ -4866,6 +4866,7 @@
     "Upstream prices fetched successfully": "Prix amont récupérés avec succès",
     "Upstream ratios fetched successfully": "Ratios en amont récupérés avec succès",
     "Upstream Request ID": "ID de requête en amont",
+    "Response ID": "ID de réponse",
     "Upstream Response": "Réponse amont",
     "Upstream Response (billing-usage-anthropic-estimated)": "Réponse amont (billing-usage-anthropic-estimated)",
     "Upstream Response (billing-usage-anthropic)": "Réponse amont (billing-usage-anthropic)",

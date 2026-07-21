@@ -173,7 +173,11 @@ func WssError(c *gin.Context, ws *websocket.Conn, openaiError types.OpenAIError)
 
 func GetResponseID(c *gin.Context) string {
 	logID := c.GetString(common.RequestIdKey)
-	return fmt.Sprintf("chatcmpl-%s", logID)
+	id := fmt.Sprintf("chatcmpl-%s", logID)
+	if c.GetString(common.ResponseIdKey) == "" {
+		c.Set(common.ResponseIdKey, id)
+	}
+	return id
 }
 
 func GetLocalRealtimeID(c *gin.Context) string {

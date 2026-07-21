@@ -655,6 +655,13 @@ export function DetailsDialog(props: DetailsDialogProps) {
               mono
             />
           )}
+          {props.log.response_id && (
+            <DetailRow
+              label={t('Response ID')}
+              value={props.log.response_id}
+              mono
+            />
+          )}
 
           {props.isAdmin && props.log.channel > 0 && (
             <DetailRow

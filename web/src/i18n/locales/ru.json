@@ -4866,6 +4866,7 @@
     "Upstream prices fetched successfully": "Цены провайдера успешно получены",
     "Upstream ratios fetched successfully": "Коэффициенты upstream успешно получены",
     "Upstream Request ID": "ID вышестоящего запроса",
+    "Response ID": "ID ответа",
     "Upstream Response": "Ответ Upstream",
     "Upstream Response (billing-usage-anthropic-estimated)": "Ответ upstream (billing-usage-anthropic-estimated)",
     "Upstream Response (billing-usage-anthropic)": "Ответ upstream (billing-usage-anthropic)",

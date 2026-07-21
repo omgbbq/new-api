@@ -4866,6 +4866,7 @@
     "Upstream prices fetched successfully": "已成功获取上游价格",
     "Upstream ratios fetched successfully": "上游比率获取成功",
     "Upstream Request ID": "上游请求 ID",
+    "Response ID": "响应 ID",
     "Upstream Response": "上游返回",
     "Upstream Response (billing-usage-anthropic-estimated)": "上游返回（billing-usage-anthropic-estimated）",
     "Upstream Response (billing-usage-anthropic)": "上游返回（billing-usage-anthropic）",
