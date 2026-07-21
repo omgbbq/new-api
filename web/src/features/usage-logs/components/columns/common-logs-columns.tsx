@@ -169,7 +169,9 @@ function buildTypeDetailSegments(
   if (isTieredExpr) {
     if (tieredSummary) {
       const baseEntries = tieredSummary.priceEntries
-        .filter((entry) => ['inputPrice', 'outputPrice'].includes(entry.field))
+        .filter((entry) =>
+          ['inputPrice', 'outputPrice', 'fixedCost'].includes(entry.field)
+        )
         .map((entry) => formatPriceCompact(entry.price))
       if (baseEntries.length > 0) {
         const tierLabel = tieredSummary.tier.label || t('Default')
@@ -200,6 +202,7 @@ function buildTypeDetailSegments(
             ![
               'inputPrice',
               'outputPrice',
+              'fixedCost',
               'cacheReadPrice',
               'cacheCreatePrice',
               'cacheCreate1hPrice',

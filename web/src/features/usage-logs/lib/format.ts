@@ -263,17 +263,26 @@ export function getTieredBillingSummary(
   const cacheTokensPresent = hasAnyCacheTokens(other)
 
   const priceEntries: TieredBillingSummary['priceEntries'] = []
-  for (const v of BILLING_PRICING_VARS) {
-    if (!v.field) continue
-    if (v.group === 'cache' && !cacheTokensPresent) continue
-    const raw = tier[v.field as keyof ParsedTier]
-    const price = Number(raw)
-    if (Number.isFinite(price) && price > 0) {
-      priceEntries.push({
-        field: v.field,
-        shortLabel: v.shortLabel,
-        price,
-      })
+  const fixedCost = Number(tier['fixedCost' as keyof ParsedTier] || 0)
+  if (fixedCost > 0) {
+    priceEntries.push({
+      field: 'fixedCost',
+      shortLabel: 'Per-call',
+      price: fixedCost / 1_000_000,
+    })
+  } else {
+    for (const v of BILLING_PRICING_VARS) {
+      if (!v.field) continue
+      if (v.group === 'cache' && !cacheTokensPresent) continue
+      const raw = tier[v.field as keyof ParsedTier]
+      const price = Number(raw)
+      if (Number.isFinite(price) && price > 0) {
+        priceEntries.push({
+          field: v.field,
+          shortLabel: v.shortLabel,
+          price,
+        })
+      }
     }
   }
   return { tiers, tier, priceEntries }
