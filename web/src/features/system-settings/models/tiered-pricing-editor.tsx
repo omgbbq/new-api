@@ -1711,18 +1711,23 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
     onRequestRuleExprChange,
   ])
 
-  const handleVisualChange = useCallback((next: VisualConfig) => {
-    setVisualConfig(next)
-  }, [])
+  const handleVisualChange = useCallback(
+    (next: VisualConfig) => {
+      setVisualConfig(next)
+      onBillingExprChange(generateExprFromVisualConfig(next))
+    },
+    [onBillingExprChange]
+  )
 
   const handleRawChange = useCallback(
     (value: string) => {
       setRawExpr(value)
-      const { requestRuleExpr: ruleStr } =
+      const { billingExpr: exprPart, requestRuleExpr: ruleStr } =
         splitBillingExprAndRequestRules(value)
+      onBillingExprChange(exprPart)
       onRequestRuleExprChange(ruleStr)
     },
-    [onRequestRuleExprChange]
+    [onBillingExprChange, onRequestRuleExprChange]
   )
 
   const handleModeChange = useCallback(
@@ -1733,8 +1738,11 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
         const parsed = tryParseVisualConfig(billingExpr)
         if (parsed) {
           setVisualConfig(parsed)
+          onBillingExprChange(generateExprFromVisualConfig(parsed))
         } else {
-          setVisualConfig(createDefaultVisualConfig())
+          const defaultConfig = createDefaultVisualConfig()
+          setVisualConfig(defaultConfig)
+          onBillingExprChange(generateExprFromVisualConfig(defaultConfig))
         }
         const parsedGroups = tryParseRequestRuleExpr(ruleStr)
         setRequestRuleGroups(parsedGroups || [])
@@ -1743,10 +1751,17 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
         const expr = generateExprFromVisualConfig(visualConfig)
         const ruleExpr = buildRequestRuleExpr(requestRuleGroups)
         setRawExpr(combineBillingExpr(expr, ruleExpr) || expr)
+        onBillingExprChange(expr)
       }
       setEditorMode(next)
     },
-    [rawExpr, visualConfig, requestRuleGroups, onRequestRuleExprChange]
+    [
+      rawExpr,
+      visualConfig,
+      requestRuleGroups,
+      onBillingExprChange,
+      onRequestRuleExprChange,
+    ]
   )
 
   const applyPreset = useCallback(
@@ -1764,9 +1779,10 @@ export const TieredPricingEditor = memo(function TieredPricingEditor({
         setVisualConfig(null)
       }
       setRequestRuleGroups(presetGroups)
+      onBillingExprChange(preset.expr)
       onRequestRuleExprChange(ruleExpr)
     },
-    [onRequestRuleExprChange]
+    [onBillingExprChange, onRequestRuleExprChange]
   )
 
   const handleRuleGroupsChange = useCallback((next: RequestRuleGroup[]) => {
