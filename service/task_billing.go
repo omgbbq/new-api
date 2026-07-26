@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -324,4 +325,127 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 
 	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, otherMultiplier)
 	RecalculateTaskQuota(ctx, task, actualQuota, reason, clamp)
+}
+
+// settleTaskTieredExpr 使用 BillingContext 中存储的表达式信息重新计算任务的实际额度。
+// 当表达式包含 token 变量(c/p) 且任务完成后获得了实际 token 数时，用实际值重算。
+// 返回 true 表示已完成结算（无论成功与否），调用者不应再走其他结算路径。
+func settleTaskTieredExpr(ctx context.Context, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
+	bc := task.PrivateData.BillingContext
+	if bc == nil || bc.ExprString == "" {
+		return false
+	}
+
+	// 确保有 token 数据可用于重算
+	completionTokens := taskResult.CompletionTokens
+	totalTokens := taskResult.TotalTokens
+	if completionTokens <= 0 && totalTokens <= 0 {
+		return false
+	}
+
+	// 推导 prompt tokens
+	promptTokens := totalTokens - completionTokens
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+
+	// 构造 BillingSnapshot
+	snap := &billingexpr.BillingSnapshot{
+		BillingMode:  "tiered_expr",
+		ModelName:    bc.OriginModelName,
+		ExprString:   bc.ExprString,
+		ExprHash:     bc.ExprHash,
+		GroupRatio:   bc.ExprGroupRatio,
+		QuotaPerUnit: bc.QuotaPerUnit,
+		ExprVersion:  bc.ExprVersion,
+	}
+
+	// 构造请求输入（用于 param() 函数）
+	requestInput := billingexpr.RequestInput{}
+	if len(bc.BillingBody) > 0 {
+		requestInput.Body = bc.BillingBody
+	}
+
+	// 构造 token 参数
+	params := billingexpr.TokenParams{
+		P: float64(promptTokens),
+		C: float64(completionTokens),
+	}
+
+	tr, err := billingexpr.ComputeTieredQuotaWithRequest(snap, params, requestInput)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("任务 %s tiered_expr 结算失败: %s", task.TaskID, err.Error()))
+		return true
+	}
+
+	actualQuota := tr.ActualQuotaAfterGroup
+	reason := fmt.Sprintf("tiered_expr结算：tier=%s, c=%d, p=%d, expr=%s",
+		tr.MatchedTier, completionTokens, promptTokens, bc.ExprString)
+	recalculateTaskQuotaWithTokens(ctx, task, actualQuota, reason, promptTokens, completionTokens, tr.Clamp)
+	return true
+}
+
+// recalculateTaskQuotaWithTokens 执行差额结算并在日志中记录 prompt/completion tokens。
+func recalculateTaskQuotaWithTokens(ctx context.Context, task *model.Task, actualQuota int, reason string, promptTokens, completionTokens int, clamp *common.QuotaClamp) {
+	if actualQuota <= 0 {
+		return
+	}
+	preConsumedQuota := task.Quota
+	quotaDelta := actualQuota - preConsumedQuota
+
+	if quotaDelta == 0 {
+		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 预扣费准确（%s，%s）",
+			task.TaskID, logger.LogQuota(actualQuota), reason))
+		return
+	}
+
+	logger.LogInfo(ctx, fmt.Sprintf("任务 %s 差额结算：delta=%s（实际：%s，预扣：%s，%s）",
+		task.TaskID,
+		logger.LogQuota(quotaDelta),
+		logger.LogQuota(actualQuota),
+		logger.LogQuota(preConsumedQuota),
+		reason,
+	))
+
+	if err := taskAdjustFunding(task, quotaDelta); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("差额结算资金调整失败 task %s: %s", task.TaskID, err.Error()))
+		return
+	}
+	taskAdjustTokenQuota(ctx, task, quotaDelta)
+
+	task.Quota = actualQuota
+	if err := task.UpdateQuota(); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("差额结算回写 quota 失败 task %s: %s", task.TaskID, err.Error()))
+	}
+
+	var logType int
+	var logQuota int
+	if quotaDelta > 0 {
+		logType = model.LogTypeConsume
+		logQuota = quotaDelta
+		model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quotaDelta)
+		model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
+	} else {
+		logType = model.LogTypeRefund
+		logQuota = -quotaDelta
+	}
+	other := taskBillingOther(task)
+	other["task_id"] = task.TaskID
+	other["pre_consumed_quota"] = preConsumedQuota
+	other["actual_quota"] = actualQuota
+	attachQuotaSaturationToOther(other, clamp)
+	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+		UserId:           task.UserId,
+		LogType:          logType,
+		Content:          reason,
+		ChannelId:        task.ChannelId,
+		ModelName:        taskModelName(task),
+		Quota:            logQuota,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TokenId:          task.PrivateData.TokenId,
+		Group:            task.Group,
+		Other:            other,
+		NodeName:         task.PrivateData.NodeName,
+	})
 }

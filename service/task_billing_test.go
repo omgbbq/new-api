@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/glebarez/sqlite"
@@ -921,4 +922,196 @@ func TestSettle_TieredExprNonPerCall_FallsThrough(t *testing.T) {
 	assert.Equal(t, tokenRemain, getTokenRemainQuota(t, tokenID))
 	assert.Equal(t, preConsumed, task.Quota)
 	assert.Equal(t, int64(0), countLogs(t))
+}
+
+// ===========================================================================
+// settleTaskTieredExpr — tiered expression settlement with actual tokens
+// ===========================================================================
+
+func TestSettleTaskTieredExpr_WithCompletionTokens(t *testing.T) {
+	// Expression: c * 23 (23元/百万 completion tokens)
+	// completion_tokens=108900, groupRatio=1, quotaPerUnit=500000
+	// Expected: 108900 * 23 / 1_000_000 * 500_000 = 1252350
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 50, 50, 50
+	const initQuota = 2000000
+	const preConsumed = 94208 // original estimate using c=8192
+	const tokenRemain = 1500000
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-tiered-settle", tokenRemain)
+	seedChannel(t, channelID)
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		OriginModelName: "doubao-seedance-model",
+		PerCallBilling:  false, // token-dependent expression
+		ExprString:      `tier("无参考视频", c * 23)`,
+		ExprHash:        billingexpr.ExprHashString(`tier("无参考视频", c * 23)`),
+		ExprGroupRatio:  1.0,
+		QuotaPerUnit:    500000,
+		ExprVersion:     0,
+	}
+	require.NoError(t, model.DB.Create(task).Error)
+
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		CompletionTokens: 108900,
+		TotalTokens:      108900,
+	}
+
+	settled := settleTaskTieredExpr(ctx, task, taskResult)
+	require.True(t, settled)
+
+	// Expected quota: 108900 * 23 / 1e6 * 500000 = 1252350
+	expectedQuota := 1252350
+	assert.Equal(t, expectedQuota, task.Quota)
+
+	// User should be charged the delta (1252350 - 94208 = 1158142 additional)
+	assert.Equal(t, initQuota-(expectedQuota-preConsumed), getUserQuota(t, userID))
+
+	// Token should also be charged the delta
+	assert.Equal(t, tokenRemain-(expectedQuota-preConsumed), getTokenRemainQuota(t, tokenID))
+
+	// Log should contain tokens
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, model.LogTypeConsume, log.Type)
+	assert.Equal(t, expectedQuota-preConsumed, log.Quota)
+	assert.Equal(t, 108900, log.CompletionTokens)
+	assert.Equal(t, 0, log.PromptTokens)
+}
+
+func TestSettleTaskTieredExpr_WithParamCondition(t *testing.T) {
+	// Expression uses param() to select tier:
+	// param("has_ref") == true ? tier("有参考视频", c*14) : tier("无参考视频", c*23)
+	// With body {"has_ref":true}, completion_tokens=100000, groupRatio=1
+	// Expected: tier("有参考视频") → 100000 * 14 / 1e6 * 500000 = 700000
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 51, 51, 51
+	const initQuota = 2000000
+	const preConsumed = 57344
+	const tokenRemain = 1800000
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-tiered-param", tokenRemain)
+	seedChannel(t, channelID)
+
+	expr := `param("has_ref") == true ? tier("有参考视频", c*14) : tier("无参考视频", c*23)`
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		OriginModelName: "doubao-seedance-model",
+		PerCallBilling:  false,
+		ExprString:      expr,
+		ExprHash:        billingexpr.ExprHashString(expr),
+		ExprGroupRatio:  1.0,
+		QuotaPerUnit:    500000,
+		ExprVersion:     0,
+		BillingBody:     []byte(`{"has_ref":true}`),
+	}
+	require.NoError(t, model.DB.Create(task).Error)
+
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		CompletionTokens: 100000,
+		TotalTokens:      100000,
+	}
+
+	settled := settleTaskTieredExpr(ctx, task, taskResult)
+	require.True(t, settled)
+
+	// 100000 * 14 / 1e6 * 500000 = 700000
+	expectedQuota := 700000
+	assert.Equal(t, expectedQuota, task.Quota)
+	assert.Equal(t, initQuota-(expectedQuota-preConsumed), getUserQuota(t, userID))
+
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Equal(t, 100000, log.CompletionTokens)
+}
+
+func TestSettleTaskTieredExpr_NoTokens_ReturnsFalse(t *testing.T) {
+	ctx := context.Background()
+
+	task := makeTask(1, 1, 1000, 0, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		ExprString:     `tier("test", c * 10)`,
+		ExprHash:       billingexpr.ExprHashString(`tier("test", c * 10)`),
+		ExprGroupRatio: 1.0,
+		QuotaPerUnit:   500000,
+	}
+
+	// No tokens in result → should not settle
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		CompletionTokens: 0,
+		TotalTokens:      0,
+	}
+
+	settled := settleTaskTieredExpr(ctx, task, taskResult)
+	assert.False(t, settled)
+}
+
+func TestSettleTaskTieredExpr_NoExpr_ReturnsFalse(t *testing.T) {
+	ctx := context.Background()
+
+	task := makeTask(1, 1, 1000, 0, BillingSourceWallet, 0)
+	// No ExprString set
+
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		CompletionTokens: 5000,
+		TotalTokens:      5000,
+	}
+
+	settled := settleTaskTieredExpr(ctx, task, taskResult)
+	assert.False(t, settled)
+}
+
+func TestSettleTaskTieredExpr_IntegrationWithSettleComplete(t *testing.T) {
+	// Verify that settleTaskBillingOnComplete correctly invokes
+	// settleTaskTieredExpr before falling through to adaptor/token paths.
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 52, 52, 52
+	const initQuota = 1000000
+	const preConsumed = 50000
+	const tokenRemain = 900000
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-settle-integration", tokenRemain)
+	seedChannel(t, channelID)
+
+	expr := `tier("video", c * 10)`
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext = &model.TaskBillingContext{
+		OriginModelName: "video-model",
+		PerCallBilling:  false,
+		ExprString:      expr,
+		ExprHash:        billingexpr.ExprHashString(expr),
+		ExprGroupRatio:  1.0,
+		QuotaPerUnit:    500000,
+		ExprVersion:     0,
+	}
+	require.NoError(t, model.DB.Create(task).Error)
+
+	// Adaptor also returns a value, but tiered_expr should take priority
+	adaptor := &mockAdaptor{adjustReturn: 99999}
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		CompletionTokens: 50000,
+		TotalTokens:      50000,
+	}
+
+	settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+
+	// c * 10: 50000 * 10 / 1e6 * 500000 = 250000
+	expectedQuota := 250000
+	assert.Equal(t, expectedQuota, task.Quota)
+	assert.Equal(t, initQuota-(expectedQuota-preConsumed), getUserQuota(t, userID))
 }

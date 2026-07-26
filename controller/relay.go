@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -586,14 +587,7 @@ func RelayTask(c *gin.Context) {
 		task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 		task.PrivateData.TokenId = relayInfo.TokenId
 		task.PrivateData.NodeName = common.NodeName
-		task.PrivateData.BillingContext = &model.TaskBillingContext{
-			ModelPrice:      relayInfo.PriceData.ModelPrice,
-			GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
-			ModelRatio:      relayInfo.PriceData.ModelRatio,
-			OtherRatios:     relayInfo.PriceData.OtherRatios(),
-			OriginModelName: relayInfo.OriginModelName,
-			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice || relayInfo.TieredBillingSnapshot != nil,
-		}
+		task.PrivateData.BillingContext = buildTaskBillingContext(relayInfo)
 		task.Quota = result.Quota
 		task.Data = result.TaskData
 		task.Action = relayInfo.Action
@@ -655,4 +649,37 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 		return false
 	}
 	return true
+}
+
+// buildTaskBillingContext 构造任务的计费上下文快照。
+// 对于 tiered_expr 模式：存储表达式信息以便任务完成时重新计算；
+// 只有当表达式不依赖 token 变量(c/p)时才标记 PerCallBilling=true。
+func buildTaskBillingContext(relayInfo *relaycommon.RelayInfo) *model.TaskBillingContext {
+	bc := &model.TaskBillingContext{
+		ModelPrice:      relayInfo.PriceData.ModelPrice,
+		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		ModelRatio:      relayInfo.PriceData.ModelRatio,
+		OtherRatios:     relayInfo.PriceData.OtherRatios(),
+		OriginModelName: relayInfo.OriginModelName,
+		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+	}
+
+	snap := relayInfo.TieredBillingSnapshot
+	if snap != nil {
+		bc.ExprString = snap.ExprString
+		bc.ExprHash = snap.ExprHash
+		bc.ExprGroupRatio = snap.GroupRatio
+		bc.QuotaPerUnit = snap.QuotaPerUnit
+		bc.ExprVersion = snap.ExprVersion
+		if relayInfo.BillingRequestInput != nil {
+			bc.BillingBody = relayInfo.BillingRequestInput.Body
+		}
+		// 仅当表达式不依赖 token 变量时才标记 PerCallBilling
+		usedVars := billingexpr.UsedVars(snap.ExprString)
+		if !usedVars["c"] && !usedVars["p"] {
+			bc.PerCallBilling = true
+		}
+	}
+
+	return bc
 }

@@ -120,6 +120,13 @@ type TaskBillingContext struct {
 	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
 	OriginModelName string             `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool               `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
+	// tiered_expr 结算字段（用于轮询完成后重新计算）
+	ExprString     string  `json:"expr_string,omitempty"`      // 计费表达式原文
+	ExprHash       string  `json:"expr_hash,omitempty"`        // 表达式 SHA-256
+	ExprGroupRatio float64 `json:"expr_group_ratio,omitempty"` // 表达式快照中的分组倍率
+	QuotaPerUnit   float64 `json:"quota_per_unit,omitempty"`   // 每单位额度（如 500000）
+	ExprVersion    int     `json:"expr_version,omitempty"`     // 表达式版本
+	BillingBody    []byte  `json:"billing_body,omitempty"`     // 提交时的请求体快照（用于 param() 函数）
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）
