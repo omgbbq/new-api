@@ -186,6 +186,18 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types.PriceData, error) {
 	groupRatioInfo := HandleGroupRatio(c, info)
 
+	// Check if this model uses tiered_expr billing
+	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
+		priceData, err := modelPriceHelperTiered(c, info, 0, &types.TokenCountMeta{}, groupRatioInfo)
+		if err != nil {
+			return priceData, err
+		}
+		// Task path uses PriceData.Quota (not QuotaToPreConsume), sync them.
+		priceData.Quota = priceData.QuotaToPreConsume
+		info.PriceData = priceData
+		return priceData, nil
+	}
+
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success
 	var modelRatio float64

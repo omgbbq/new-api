@@ -181,6 +181,218 @@ func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
 	require.Equal(t, common.QuotaClampOverflow, clamp.Kind)
 }
 
+func TestModelPriceHelperPerCallTieredExpr(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+	})
+
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"percall-tiered-model":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"percall-tiered-model":"param(\"n\") == 0 ? tier(\"default\", 0.25 * 1000000) : tier(\"per-image\", param(\"n\") * 0.25 * 1000000)"}`,
+		"group_ratio_setting.group_ratio": `{"default":1,"free":0}`,
+	}))
+
+	cases := []struct {
+		name     string
+		group    string
+		body     string
+		wantTier string
+		wantGt0  bool
+	}{
+		{
+			name:     "per-call tiered expr with param n=2",
+			group:    "default",
+			body:     `{"n":2}`,
+			wantTier: "per-image",
+			wantGt0:  true,
+		},
+		{
+			name:     "per-call tiered expr with param n=0 uses default tier",
+			group:    "default",
+			body:     `{"n":0}`,
+			wantTier: "default",
+			wantGt0:  true,
+		},
+		{
+			name:     "free group produces zero quota",
+			group:    "free",
+			body:     `{"n":2}`,
+			wantTier: "per-image",
+			wantGt0:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+			req.Header.Set("Content-Type", "application/json")
+			ctx.Request = req
+			ctx.Set("group", tc.group)
+
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "percall-tiered-model",
+				UserGroup:       tc.group,
+				UsingGroup:      tc.group,
+				RequestHeaders:  map[string]string{"Content-Type": "application/json"},
+				BillingRequestInput: &billingexpr.RequestInput{
+					Headers: map[string]string{"Content-Type": "application/json"},
+					Body:    []byte(tc.body),
+				},
+			}
+
+			priceData, err := ModelPriceHelperPerCall(ctx, info)
+			require.NoError(t, err)
+			require.NotNil(t, info.TieredBillingSnapshot)
+			require.Equal(t, tc.wantTier, info.TieredBillingSnapshot.EstimatedTier)
+			require.Equal(t, billing_setting.BillingModeTieredExpr, info.TieredBillingSnapshot.BillingMode)
+			// Task path uses PriceData.Quota; verify it equals QuotaToPreConsume.
+			require.Equal(t, priceData.QuotaToPreConsume, priceData.Quota)
+			if tc.wantGt0 {
+				require.Greater(t, priceData.Quota, 0)
+			} else {
+				require.Equal(t, 0, priceData.Quota)
+			}
+		})
+	}
+}
+
+func TestModelPriceHelperPerCallTieredExprExactQuota(t *testing.T) {
+	// Verify the exact quota calculation for a per-call tiered expression.
+	// Expression: param("n") * 0.25 * 1000000
+	// With n=4, groupRatio=1: rawCost = 4 * 0.25 * 1000000 = 1000000
+	// quotaBeforeGroup = 1000000 / 1_000_000 * 500_000 = 500000
+	// preConsumedQuota = 500000 * 1.0 (groupRatio) = 500000
+	gin.SetMode(gin.TestMode)
+
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+	})
+
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"percall-exact-model":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"percall-exact-model":"tier(\"per-image\", param(\"n\") * 0.25 * 1000000)"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	ctx.Set("group", "default")
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "percall-exact-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		RequestHeaders:  map[string]string{"Content-Type": "application/json"},
+		BillingRequestInput: &billingexpr.RequestInput{
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    []byte(`{"n":4}`),
+		},
+	}
+
+	priceData, err := ModelPriceHelperPerCall(ctx, info)
+	require.NoError(t, err)
+
+	// Exact quota: 4 * 0.25 * 1000000 / 1e6 * 500000 = 500000
+	require.Equal(t, 500000, priceData.Quota)
+	require.Equal(t, priceData.Quota, priceData.QuotaToPreConsume)
+	require.NotNil(t, info.TieredBillingSnapshot)
+	require.Equal(t, "per-image", info.TieredBillingSnapshot.EstimatedTier)
+}
+
+func TestModelPriceHelperPerCallTieredExprCompletionTokenFallback(t *testing.T) {
+	// Verify expressions using `c` (completion tokens) get the 8192 fallback
+	// in per-call context where no actual tokens are available yet.
+	// Expression: tier("video", c * 14)
+	// With c=8192 (fallback), groupRatio=1: rawCost = 8192*14 = 114688
+	// quotaBeforeGroup = 114688 / 1e6 * 500000 = 57344
+	gin.SetMode(gin.TestMode)
+
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+	})
+
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"percall-video-model":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"percall-video-model":"tier(\"video\", c * 14)"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/video/generations", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	ctx.Set("group", "default")
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "percall-video-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		RequestHeaders:  map[string]string{"Content-Type": "application/json"},
+		BillingRequestInput: &billingexpr.RequestInput{
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    []byte(`{}`),
+		},
+	}
+
+	priceData, err := ModelPriceHelperPerCall(ctx, info)
+	require.NoError(t, err)
+
+	// c=8192 (defaultTieredPreConsumeMaxTokens), rawCost=8192*14=114688
+	// quota = 114688 / 1e6 * 500000 = 57344
+	require.Equal(t, 57344, priceData.Quota)
+	require.Equal(t, priceData.Quota, priceData.QuotaToPreConsume)
+	require.NotNil(t, info.TieredBillingSnapshot)
+	require.Equal(t, "video", info.TieredBillingSnapshot.EstimatedTier)
+}
+
+func TestModelPriceHelperPerCallFallsBackWithoutTieredExpr(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	savedModelPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedModelPrices))
+	})
+
+	modelPrices, err := common.Marshal(map[string]float64{"percall-fixed-model": 0.5})
+	require.NoError(t, err)
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(string(modelPrices)))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "percall-fixed-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+	}
+
+	priceData, err := ModelPriceHelperPerCall(ctx, info)
+	require.NoError(t, err)
+	require.True(t, priceData.UsePrice)
+	require.Greater(t, priceData.Quota, 0)
+	require.Nil(t, info.TieredBillingSnapshot)
+}
+
 func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	savedModelPrices := ratio_setting.ModelPrice2JSONString()

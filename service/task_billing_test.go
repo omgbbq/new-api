@@ -817,3 +817,77 @@ func TestSettle_NonPerCallBilling_AppliesAdaptorAdjustment(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
 }
+
+// ===========================================================================
+// TieredExpr PerCallBilling — simulates task with tiered_expr billing
+// ===========================================================================
+
+func TestSettle_TieredExprPerCallBilling_SkipsSettlement(t *testing.T) {
+	// When a task uses tiered_expr billing (PerCallBilling=true),
+	// settleTaskBillingOnComplete must skip all settlement even if
+	// adaptor returns a value or taskResult has TotalTokens.
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 40, 40, 40
+	const initQuota, preConsumed = 20000, 8000
+	const tokenRemain = 15000
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-tiered-expr", tokenRemain)
+	seedChannel(t, channelID)
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext.PerCallBilling = true // tiered_expr tasks set this
+
+	// Both adaptor adjustment and TotalTokens are present but should be ignored
+	adaptor := &mockAdaptor{adjustReturn: 3000}
+	taskResult := &relaycommon.TaskInfo{
+		Status:           model.TaskStatusSuccess,
+		TotalTokens:      5000,
+		CompletionTokens: 5000,
+	}
+
+	settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+
+	// No settlement: user/token balances unchanged, task quota stays at preConsumed
+	assert.Equal(t, initQuota, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, preConsumed, task.Quota)
+	assert.Equal(t, int64(0), countLogs(t))
+}
+
+func TestSettle_TieredExprNonPerCall_FallsThrough(t *testing.T) {
+	// If a tiered_expr task does NOT have PerCallBilling set
+	// and adaptor returns 0 and TotalTokens > 0, it will attempt
+	// RecalculateTaskQuotaByTokens which requires model ratio.
+	// Without model ratio configured, no settlement occurs.
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 41, 41, 41
+	const initQuota, preConsumed = 20000, 8000
+	const tokenRemain = 15000
+
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-tiered-nopercall", tokenRemain)
+	seedChannel(t, channelID)
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext.PerCallBilling = false // NOT set
+
+	adaptor := &mockAdaptor{adjustReturn: 0}
+	taskResult := &relaycommon.TaskInfo{
+		Status:      model.TaskStatusSuccess,
+		TotalTokens: 5000,
+	}
+
+	settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
+
+	// Without model ratio configured, RecalculateTaskQuotaByTokens returns early.
+	// No settlement occurs.
+	assert.Equal(t, initQuota, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, preConsumed, task.Quota)
+	assert.Equal(t, int64(0), countLogs(t))
+}
