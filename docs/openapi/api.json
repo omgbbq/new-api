@@ -349,6 +349,109 @@
         ]
       }
     },
+    "/api/pricing/estimate": {
+      "post": {
+        "summary": "预计算模型 Quota 消耗",
+        "deprecated": false,
+        "description": "🔓 无需鉴权\n\n在实际调用模型之前，预估本次请求将消耗的 quota 额度。支持三种计费模式：倍率模式（ratio）、固定价格模式（price）、表达式计费模式（tiered_expr）。",
+        "tags": [
+          "系统"
+        ],
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuotaEstimateRequest"
+              },
+              "example": {
+                "model": "gpt-image-2",
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "group": "default",
+                "request_body": "{\"n\": 1}"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/QuotaEstimateResponse"
+                    }
+                  }
+                },
+                "examples": {
+                  "tiered_expr": {
+                    "summary": "表达式计费模式",
+                    "value": {
+                      "success": true,
+                      "message": "",
+                      "data": {
+                        "model": "gpt-image-2",
+                        "billing_mode": "tiered_expr",
+                        "group": "default",
+                        "group_ratio": 1.0,
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "quota_before_group": 77280,
+                        "quota": 77280,
+                        "estimated_cost": 1.1278,
+                        "currency": "CNY",
+                        "matched_tier": "默认",
+                        "expression": "tier(\"默认\", p * 53.76 + c * 201.6)"
+                      }
+                    }
+                  },
+                  "ratio": {
+                    "summary": "倍率计费模式",
+                    "value": {
+                      "success": true,
+                      "message": "",
+                      "data": {
+                        "model": "gpt-4",
+                        "billing_mode": "ratio",
+                        "group": "default",
+                        "group_ratio": 1.0,
+                        "model_ratio": 15.0,
+                        "completion_ratio": 2.0,
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "quota_before_group": 30000,
+                        "quota": 30000,
+                        "estimated_cost": 0.438,
+                        "currency": "CNY"
+                      }
+                    }
+                  },
+                  "error": {
+                    "summary": "请求失败",
+                    "value": {
+                      "success": false,
+                      "message": "token counts must be non-negative",
+                      "data": null
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/api/models": {
       "get": {
         "summary": "获取模型列表",
@@ -5233,6 +5336,100 @@
   },
   "components": {
     "schemas": {
+      "QuotaEstimateRequest": {
+        "type": "object",
+        "required": ["model"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "模型名称"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "输入 token 数量（默认 0）",
+            "minimum": 0
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "输出 token 数量（默认 0）",
+            "minimum": 0
+          },
+          "group": {
+            "type": "string",
+            "description": "用户分组名称，用于计算分组倍率（默认 default）"
+          },
+          "request_body": {
+            "type": "string",
+            "description": "实际调用模型接口时的原始请求体 JSON 字符串（如 /v1/images/generations 的 body）。系统从中提取 n（固定价格模式的生成数量）及表达式中 param() 引用的参数"
+          }
+        }
+      },
+      "QuotaEstimateResponse": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "模型名称"
+          },
+          "billing_mode": {
+            "type": "string",
+            "description": "计费模式：ratio 或 tiered_expr",
+            "enum": ["ratio", "tiered_expr"]
+          },
+          "group": {
+            "type": "string",
+            "description": "使用的分组名称"
+          },
+          "group_ratio": {
+            "type": "number",
+            "description": "分组倍率"
+          },
+          "model_ratio": {
+            "type": "number",
+            "description": "模型倍率（仅 ratio 模式）"
+          },
+          "completion_ratio": {
+            "type": "number",
+            "description": "补全倍率（仅 ratio 模式）"
+          },
+          "model_price": {
+            "type": "number",
+            "description": "模型固定价格（仅固定价格模式）"
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "输入 token 数"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "输出 token 数"
+          },
+          "quota_before_group": {
+            "type": "number",
+            "description": "应用分组倍率前的 quota"
+          },
+          "quota": {
+            "type": "integer",
+            "description": "最终预估消耗的 quota"
+          },
+          "estimated_cost": {
+            "type": "number",
+            "description": "预估费用金额（已根据系统汇率设置转换为对应货币）"
+          },
+          "currency": {
+            "type": "string",
+            "description": "币种代码（如 USD、CNY 或自定义币种）"
+          },
+          "matched_tier": {
+            "type": "string",
+            "description": "匹配的计费层级名称（仅 tiered_expr 模式）"
+          },
+          "expression": {
+            "type": "string",
+            "description": "使用的计费表达式（仅 tiered_expr 模式）"
+          }
+        }
+      },
       "ApiResponse": {
         "type": "object",
         "properties": {
