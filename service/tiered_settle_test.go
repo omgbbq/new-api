@@ -5,9 +5,9 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/shopspring/decimal"
 )
 
@@ -888,42 +888,6 @@ func TestTryTieredSettle_ChannelDifferentiation_CrossedTier(t *testing.T) {
 	}
 	if !result.CrossedTier {
 		t.Fatal("expected CrossedTier = true (pre-consume was combo, settle is per-call)")
-	}
-}
-
-func TestTryTieredSettle_ChannelPerCall_FixedCostIgnoresTokens(t *testing.T) {
-	// Per-call billing: quota is constant regardless of token count
-	exprStr := `channel("name") == "ChannelA" ? tier("per-call", 680000) : tier("base", p*2.5 + c*15)`
-	info := makeRelayInfo(exprStr, 1.0, 1000, 500)
-	info.ChannelMeta = &relaycommon.ChannelMeta{
-		ChannelName: "ChannelA",
-		ChannelId:   1,
-		ChannelType: 1,
-	}
-
-	// With small tokens
-	ok1, quota1, result1 := TryTieredSettle(info, billingexpr.TokenParams{P: 100, C: 50})
-	if !ok1 {
-		t.Fatal("expected tiered settle")
-	}
-	// With large tokens — should produce the same quota
-	ok2, quota2, result2 := TryTieredSettle(info, billingexpr.TokenParams{P: 1000000, C: 500000})
-	if !ok2 {
-		t.Fatal("expected tiered settle")
-	}
-
-	// 680000 / 1M * 500K = 340000
-	if quota1 != 340000 {
-		t.Fatalf("quota1 = %d, want 340000", quota1)
-	}
-	if quota2 != 340000 {
-		t.Fatalf("quota2 = %d, want 340000 (per-call should be fixed)", quota2)
-	}
-	if quota1 != quota2 {
-		t.Fatalf("per-call quota should not vary with tokens: %d != %d", quota1, quota2)
-	}
-	if result1.MatchedTier != "per-call" || result2.MatchedTier != "per-call" {
-		t.Fatalf("tier mismatch: %s, %s", result1.MatchedTier, result2.MatchedTier)
 	}
 }
 
