@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,4 +192,185 @@ func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.
 	require.Equal(t, "Codex CLI", upstreamReq.Header.Get("Originator"))
 	require.Equal(t, "sess-123", upstreamReq.Header.Get("Session_id"))
 	require.Empty(t, upstreamReq.Header.Get("X-Codex-Beta-Features"))
+}
+
+func TestCaptureUpstreamRequestId_Priority(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		headers  map[string]string
+		expected string
+	}{
+		{
+			name:     "cascade X-Oneapi-Request-Id takes highest priority",
+			headers:  map[string]string{common.RequestIdKey: "oneapi-123", "x-request-id": "openai-456"},
+			expected: "oneapi-123",
+		},
+		{
+			name:     "OpenAI x-request-id",
+			headers:  map[string]string{"x-request-id": "openai-456"},
+			expected: "openai-456",
+		},
+		{
+			name:     "Claude request-id",
+			headers:  map[string]string{"request-id": "claude-789"},
+			expected: "claude-789",
+		},
+		{
+			name:     "Azure apim-request-id",
+			headers:  map[string]string{"apim-request-id": "azure-abc"},
+			expected: "azure-abc",
+		},
+		{
+			name:     "Gemini x-goog-request-id",
+			headers:  map[string]string{"x-goog-request-id": "gemini-def"},
+			expected: "gemini-def",
+		},
+		{
+			name:     "AWS x-amzn-requestid",
+			headers:  map[string]string{"x-amzn-requestid": "aws-ghi"},
+			expected: "aws-ghi",
+		},
+		{
+			name:     "ByteDance x-tt-logid",
+			headers:  map[string]string{"x-tt-logid": "doubao-jkl"},
+			expected: "doubao-jkl",
+		},
+		{
+			name:     "Cloudflare cf-ray",
+			headers:  map[string]string{"cf-ray": "cf-mno"},
+			expected: "cf-mno",
+		},
+		{
+			name:     "no matching header returns empty",
+			headers:  map[string]string{"x-custom-id": "custom-123"},
+			expected: "",
+		},
+		{
+			name:     "x-request-id wins over lower-priority headers",
+			headers:  map[string]string{"x-request-id": "openai-456", "x-amzn-requestid": "aws-ghi", "cf-ray": "cf-mno"},
+			expected: "openai-456",
+		},
+		{
+			name:     "empty header value is skipped",
+			headers:  map[string]string{"x-request-id": "", "request-id": "claude-789"},
+			expected: "claude-789",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gin.SetMode(gin.TestMode)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+			respHeader := http.Header{}
+			for k, v := range tt.headers {
+				respHeader.Set(k, v)
+			}
+
+			captureUpstreamRequestId(ctx, respHeader)
+
+			got, _ := ctx.Get(common.UpstreamRequestIdKey)
+			if tt.expected == "" {
+				assert.Nil(t, got)
+			} else {
+				assert.Equal(t, tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestCaptureUpstreamRequestId_AllRelayPaths(t *testing.T) {
+	t.Parallel()
+
+	paths := []struct {
+		name   string
+		path   string
+		header string
+		value  string
+	}{
+		{
+			name:   "chat completions - OpenAI",
+			path:   "/v1/chat/completions",
+			header: "x-request-id",
+			value:  "chatcmpl-req-001",
+		},
+		{
+			name:   "completions - OpenAI",
+			path:   "/v1/completions",
+			header: "x-request-id",
+			value:  "cmpl-req-002",
+		},
+		{
+			name:   "images generations - OpenAI",
+			path:   "/v1/images/generations",
+			header: "x-request-id",
+			value:  "img-req-003",
+		},
+		{
+			name:   "video generations - Doubao/Volcengine",
+			path:   "/v1/video/generations",
+			header: "x-tt-logid",
+			value:  "video-logid-004",
+		},
+		{
+			name:   "chat completions - Claude via AWS Bedrock HTTP",
+			path:   "/v1/chat/completions",
+			header: "x-amzn-requestid",
+			value:  "aws-bedrock-005",
+		},
+		{
+			name:   "chat completions - Azure",
+			path:   "/v1/chat/completions",
+			header: "apim-request-id",
+			value:  "azure-006",
+		},
+		{
+			name:   "chat completions - Gemini",
+			path:   "/v1/chat/completions",
+			header: "x-goog-request-id",
+			value:  "gemini-007",
+		},
+		{
+			name:   "chat completions - Claude/Anthropic",
+			path:   "/v1/chat/completions",
+			header: "request-id",
+			value:  "claude-008",
+		},
+		{
+			name:   "images generations - Cloudflare",
+			path:   "/v1/images/generations",
+			header: "cf-ray",
+			value:  "cf-ray-009",
+		},
+		{
+			name:   "chat completions - cascade new-api",
+			path:   "/v1/chat/completions",
+			header: common.RequestIdKey,
+			value:  "cascade-010",
+		},
+	}
+
+	for _, tt := range paths {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gin.SetMode(gin.TestMode)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, tt.path, nil)
+
+			respHeader := http.Header{}
+			respHeader.Set(tt.header, tt.value)
+
+			captureUpstreamRequestId(ctx, respHeader)
+
+			got, exists := ctx.Get(common.UpstreamRequestIdKey)
+			assert.True(t, exists, "upstream request id should be captured for %s", tt.name)
+			assert.Equal(t, tt.value, got)
+		})
+	}
 }

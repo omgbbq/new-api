@@ -530,13 +530,20 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		))
 	}
 
-	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
-		c.Set(common2.UpstreamRequestIdKey, upID)
-	}
+	captureUpstreamRequestId(c, resp.Header)
 
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()
 	return resp, nil
+}
+
+func captureUpstreamRequestId(c *gin.Context, header http.Header) {
+	for _, h := range common2.UpstreamRequestIdHeaders {
+		if upID := header.Get(h); upID != "" {
+			c.Set(common2.UpstreamRequestIdKey, upID)
+			return
+		}
+	}
 }
 
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {

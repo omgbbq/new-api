@@ -23,10 +23,12 @@ import (
 
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	bedrockruntimeTypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go/auth/bearer"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
 )
 
 // getAwsErrorStatusCode extracts HTTP status code from AWS SDK error
@@ -78,6 +80,12 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 	}
 
 	return client, nil
+}
+
+func captureAwsRequestId(c *gin.Context, metadata smithymiddleware.Metadata) {
+	if reqID, ok := awsmiddleware.GetRequestIDMetadata(metadata); ok && reqID != "" {
+		c.Set(common.UpstreamRequestIdKey, reqID)
+	}
 }
 
 func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor, requestBody io.Reader) (any, error) {
@@ -223,6 +231,7 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModel"), types.ErrorCodeAwsInvokeError, statusCode), nil
 	}
+	captureAwsRequestId(c, awsResp.ResultMetadata)
 
 	claudeInfo := &claude.ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
@@ -253,6 +262,7 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModelWithResponseStream"), types.ErrorCodeAwsInvokeError, statusCode), nil
 	}
+	captureAwsRequestId(c, awsResp.ResultMetadata)
 	stream := awsResp.GetStream()
 	defer stream.Close()
 
@@ -296,6 +306,7 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModel"), types.ErrorCodeAwsInvokeError, statusCode), nil
 	}
+	captureAwsRequestId(c, awsResp.ResultMetadata)
 
 	// 解析Nova响应
 	var novaResp struct {

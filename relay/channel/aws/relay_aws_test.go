@@ -8,8 +8,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,4 +55,56 @@ func TestDoAwsClientRequest_AppliesRuntimeHeaderOverrideToAnthropicBeta(t *testi
 	values, ok := anthropicBeta.([]any)
 	require.True(t, ok)
 	require.Equal(t, []any{"computer-use-2025-01-24"}, values)
+}
+
+func TestCaptureAwsRequestId_FromResultMetadata(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	var metadata smithymiddleware.Metadata
+	awsmiddleware.SetRequestIDMetadata(&metadata, "amzn-req-id-abc123")
+
+	captureAwsRequestId(ctx, metadata)
+
+	got, exists := ctx.Get(common.UpstreamRequestIdKey)
+	assert.True(t, exists)
+	assert.Equal(t, "amzn-req-id-abc123", got)
+}
+
+func TestCaptureAwsRequestId_EmptyMetadata(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	var metadata smithymiddleware.Metadata
+
+	captureAwsRequestId(ctx, metadata)
+
+	_, exists := ctx.Get(common.UpstreamRequestIdKey)
+	assert.False(t, exists)
+}
+
+func TestCaptureAwsRequestId_DoesNotOverwriteExisting(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set(common.UpstreamRequestIdKey, "existing-id-000")
+
+	var metadata smithymiddleware.Metadata
+	awsmiddleware.SetRequestIDMetadata(&metadata, "amzn-req-id-new")
+
+	captureAwsRequestId(ctx, metadata)
+
+	got, _ := ctx.Get(common.UpstreamRequestIdKey)
+	assert.Equal(t, "amzn-req-id-new", got)
 }

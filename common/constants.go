@@ -175,6 +175,17 @@ const (
 	UpstreamRequestIdKey = "X-Upstream-Request-Id"
 )
 
+var UpstreamRequestIdHeaders = []string{
+	RequestIdKey,        // 级联 new-api/one-api
+	"x-request-id",      // OpenAI, Cohere, DashScope, Zhipu, Moonshot, DeepSeek, Mistral, Groq, xAI
+	"request-id",        // Claude/Anthropic
+	"apim-request-id",   // Azure
+	"x-goog-request-id", // Google Gemini
+	"x-amzn-requestid",  // AWS Bedrock
+	"x-tt-logid",        // ByteDance/Volcengine (Doubao)
+	"cf-ray",            // Cloudflare Workers AI
+}
+
 const (
 	RoleGuestUser  = 0
 	RoleCommonUser = 1
